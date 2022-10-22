@@ -18,6 +18,7 @@
 #include "WeatherStationImages.h"
 
 #include <WiFiManager.h>
+#include <ArduinoOTA.h>
 
 
 #define RED 14
@@ -27,17 +28,18 @@
 #define TZ 5       // (utc+) TimeZone in hours
 #define DST_MN 30  // use 60mn for summer time in some countries
 
-// Setup
-const int UPDATE_INTERVAL_SECS = 3 * 60;  // Update every 20 minutes
 
+#define HOSTNAME "WeatherStation"
+// Setup
+const int UPDATE_INTERVAL_SECS = 3 * 60;
 // Display Settings
 const int I2C_DISPLAY_ADDRESS = 0x3c;
 
-const int SDA_PIN = 4;  //D3;
-const int SDC_PIN = 5;  //D4;
+const int SDA_PIN = 4;
+const int SDC_PIN = 5;
 
 
-String OPEN_WEATHER_MAP_APP_ID = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+String OPEN_WEATHER_MAP_APP_ID = "d1a7754edcf51cd4f3fc595ab9de1bdf";
 
 String OPEN_WEATHER_MAP_LOCATION_ID = "1269743";
 
@@ -77,7 +79,9 @@ void drawForecast(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, in
 void drawForecastDetails(OLEDDisplay *display, int x, int y, int dayIndex);
 void drawHeaderOverlay(OLEDDisplay *display, OLEDDisplayUiState *state);
 void setReadyForWeatherUpdate();
-
+void setRGB(int r, int g, int b);
+void configModeCallback(WiFiManager *myWiFiManager);
+void drawOtaProgress(unsigned int progress, unsigned int total);
 
 // Add frames
 // this array keeps function pointers to all frames
@@ -93,38 +97,19 @@ void setup() {
   Serial.println();
   Serial.println();
 
-  // initialize dispaly
+  pinMode(RED, HIGH);
+  pinMode(GREEN, HIGH);
+  pinMode(BLUE, HIGH);
+
+  setRGB(0, 0, 0);
   display.init();
   display.clear();
   display.display();
-
-
-  pinMode(RED, HIGH);    // Blue led Pin Connected To D5 Pin
-  pinMode(GREEN, HIGH);  // Green Led Pin Connected To D6 Pin
-  pinMode(BLUE, HIGH);   // Red Led Connected To D8 Pin
 
   display.setFont(ArialMT_Plain_10);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.setContrast(255);
 
-  WiFiManager wifiManager;
-  wifiManager.autoConnect("WeatherStation");
-
-  //WiFi.begin(WIFI_SSID, WIFI_PWD);
-
-  int counter = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    display.clear();
-    display.drawString(64, 10, "Connecting to WiFi");
-    display.drawXbm(46, 30, 8, 8, counter % 3 == 0 ? activeSymbole : inactiveSymbole);
-    display.drawXbm(60, 30, 8, 8, counter % 3 == 1 ? activeSymbole : inactiveSymbole);
-    display.drawXbm(74, 30, 8, 8, counter % 3 == 2 ? activeSymbole : inactiveSymbole);
-    display.display();
-
-    counter++;
-  }
   // Get time from network time service
   configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
 
@@ -150,15 +135,43 @@ void setup() {
 
   // Inital UI takes care of initalising the display too.
   ui.init();
+  display.flipScreenVertically();
+  
+  WiFiManager wifiManager;
+  wifiManager.setAPCallback(configModeCallback);
+  wifiManager.autoConnect("WeatherStation");
+
+  String hostname(HOSTNAME);
+  hostname += String(ESP.getChipId(), HEX);
+  WiFi.hostname(hostname);
+
+  int counter = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    setRGB(0, 10, 0);
+    delay(500);
+    setRGB(0, 0, 0);
+    Serial.print(".");
+    display.clear();
+    display.drawString(64, 10, "Connecting to WiFi");
+    display.drawXbm(46, 30, 8, 8, counter % 3 == 0 ? activeSymbole : inactiveSymbole);
+    display.drawXbm(60, 30, 8, 8, counter % 3 == 1 ? activeSymbole : inactiveSymbole);
+    display.drawXbm(74, 30, 8, 8, counter % 3 == 2 ? activeSymbole : inactiveSymbole);
+    display.display();
+
+    counter++;
+  }
 
   Serial.println("");
+  Serial.println("Hostname: " + hostname);
+  ArduinoOTA.setHostname((const char *)hostname.c_str());
+  ArduinoOTA.onProgress(drawOtaProgress);
+  ArduinoOTA.begin();
 
   updateData(&display);
-  display.flipScreenVertically();
+  
 }
 
 void loop() {
-
   if (millis() - timeSinceLastWUpdate > (1000L * UPDATE_INTERVAL_SECS)) {
     setReadyForWeatherUpdate();
     timeSinceLastWUpdate = millis();
@@ -169,12 +182,13 @@ void loop() {
   }
 
   int remainingTimeBudget = ui.update();
-
   if (remainingTimeBudget > 0) {
-
+    setRGB(5,10,15);
+    ArduinoOTA.handle();
     delay(remainingTimeBudget);
   }
 }
+
 
 void drawProgress(OLEDDisplay *display, int percentage, String label) {
   display->clear();
@@ -184,7 +198,17 @@ void drawProgress(OLEDDisplay *display, int percentage, String label) {
   display->drawProgressBar(2, 28, 124, 10, percentage);
   display->display();
 }
-
+void drawOtaProgress(unsigned int progress, unsigned int total) {
+  setRGB(5, 0, 0);
+  display.clear();
+  display.flipScreenVertically();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(64, 10, "OTA Update");
+  display.drawProgressBar(2, 28, 124, 10, progress / (total / 100));
+  display.display();
+  setRGB(0, 0, 0);
+}
 void updateData(OLEDDisplay *display) {
   drawProgress(display, 10, "Updating time...");
   drawProgress(display, 30, "Updating weather...");
@@ -200,7 +224,6 @@ void updateData(OLEDDisplay *display) {
 
   readyForWeatherUpdate = false;
   drawProgress(display, 100, "Done...");
-  delay(1000);
 }
 
 
@@ -288,4 +311,19 @@ void setRGB(int r, int g, int b) {
 void setReadyForWeatherUpdate() {
   Serial.println("Setting readyForUpdate to true");
   readyForWeatherUpdate = true;
+}
+void configModeCallback(WiFiManager *myWiFiManager) {
+  setRGB(5, 0, 0);
+  Serial.println("Entered config mode");
+  Serial.println(WiFi.softAPIP());
+  //if you used auto generated SSID, print it
+  Serial.println(myWiFiManager->getConfigPortalSSID());
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(64, 10, "Wifi Manager");
+  display.drawString(64, 20, "Please connect to AP");
+  display.drawString(64, 30, myWiFiManager->getConfigPortalSSID());
+  display.drawString(64, 40, "To setup Wifi Configuration");
+  display.display();
 }
